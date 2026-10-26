@@ -74,6 +74,57 @@ def ultimo_commit(repo):
     return r.stdout.strip()
 
 
+# ---------- resumen por correo ----------
+# fecha límite de cada issue (fin de su semana); los no listados no tienen fecha fija
+LIMITE = {'05': datetime.date(2026, 10, 25), '06': datetime.date(2026, 10, 25),
+          '07': datetime.date(2026, 11, 1), '10': datetime.date(2026, 11, 1),
+          '11': datetime.date(2026, 11, 8), '14': datetime.date(2026, 11, 8), '15': datetime.date(2026, 11, 8),
+          '16': datetime.date(2026, 11, 15), '18': datetime.date(2026, 11, 15)}
+SUSTENTACION = datetime.date(2026, 11, 18)
+
+
+def armar_resumen(hoy, equipos, lineas, alertas, sheet_id, nombres):
+    td = 'style="border:1px solid #ccc;padding:4px 8px;font-size:13px"'
+    th = 'style="border:1px solid #ccc;padding:4px 8px;font-size:13px;background:#f0f0f0;text-align:left"'
+    lunes = hoy - datetime.timedelta(days=hoy.weekday())
+    domingo = lunes + datetime.timedelta(days=6)
+    semana = sorted(i for i, f in LIMITE.items() if lunes <= f <= domingo)
+    filas, sin_actividad = [], []
+    for e in sorted(equipos, key=lambda x: (x['grupo'], -sum(v == 'Hecho' for v in x['final'].values()))):
+        f = e['final']
+        hechos = sum(v == 'Hecho' for v in f.values())
+        prog = sum(v == 'En progreso' for v in f.values())
+        vencidos = [i for i, d in LIMITE.items() if d < hoy and f.get(i) != 'Hecho']
+        esta = [i for i in semana if f.get(i) != 'Hecho']
+        color = '#c62828' if vencidos else ('#2e7d32' if hechos >= 9 else '#000')
+        dias = e['dias']
+        if dias is not None and dias > 5:
+            sin_actividad.append(e['equipo'])
+        filas.append(
+            f'<tr><td {td}>{e["grupo"]}</td><td {td}><b>{e["equipo"]}</b></td>'
+            f'<td {td}>{round(hechos * 100 / 18)}%</td><td {td}>{hechos}</td><td {td}>{prog}</td>'
+            f'<td {td}>{e["fecha"]}' + (f' ({dias} d)' if dias is not None else '') + '</td>'
+            f'<td {td[:-1]};color:{color};font-weight:bold">{", ".join(sorted(vencidos)) or "—"}</td>'
+            f'<td {td}>{", ".join(esta) or "—"}</td></tr>')
+    total = len(equipos) or 1
+    prom = round(sum(sum(v == 'Hecho' for v in e['final'].values()) for e in equipos) * 100 / (18 * total))
+    al_dia = sum(1 for e in equipos if not [i for i, d in LIMITE.items() if d < hoy and e['final'].get(i) != 'Hecho'])
+    leyenda = ' · '.join(f'{i} = {nombres[i][3:]}' for i in sorted(LIMITE))
+    return f'''<div style="font-family:Arial,sans-serif;font-size:14px">
+<h2 style="margin:0">Seguimiento TREND+TECH — {hoy.strftime('%d/%m/%Y')}</h2>
+<p><b>{(SUSTENTACION - hoy).days} días</b> para la sustentación (18-nov) · Avance promedio: <b>{prom}%</b> ·
+Equipos al día con lo vencido: <b>{al_dia}/{len(equipos)}</b>{' · <b style="color:#c62828">MODO PRUEBA</b>' if DRY else ''}</p>
+<h3>Cambios detectados hoy</h3><p>{'<br>'.join(lineas) or 'Ningún equipo subió estados desde la última corrida.'}</p>
+<h3>Estado por equipo</h3>
+<table style="border-collapse:collapse">
+<tr><th {th}>Grupo</th><th {th}>Equipo</th><th {th}>Avance</th><th {th}>Hecho</th><th {th}>En progreso</th>
+<th {th}>Último commit</th><th {th}>Vencidos sin hacer</th><th {th}>Vence esta semana</th></tr>
+{''.join(filas)}</table>
+<p style="font-size:12px;color:#555">{leyenda}</p>
+<h3>Alertas</h3><p>{'<br>'.join(alertas + [f'{n}: sin commits hace más de 5 días' for n in sin_actividad if not any(n in a for a in alertas)]) or 'Ninguna.'}</p>
+<p><a href="https://docs.google.com/spreadsheets/d/{sheet_id}/edit">Abrir hoja de seguimiento</a></p></div>'''
+
+
 # ---------- utilidades de hoja ----------
 def col_letra(i):  # 0 -> A
     s = ''
@@ -107,7 +158,9 @@ def main():
         sys.exit(f'ERROR: faltan encabezados de issues {faltan}. No se escribe nada.')
 
     hoy = datetime.date.today()
-    cambios, lineas, alertas = [], [], []
+    cambios, lineas, alertas, equipos = [], [], [], []
+    c_grupo = enc.index('Grupo (G18/G20)') if 'Grupo (G18/G20)' in enc else 1
+    c_nombre = {iss: enc[c] for iss, c in c_iss.items()}
     tmp = tempfile.mkdtemp()
     for r in range(FILA_ENCABEZADO, len(datos)):
         fila = datos[r]
@@ -128,37 +181,31 @@ def main():
         fecha = ultimo_commit(d)
         if fecha and (hoy - datetime.date.fromisoformat(fecha)).days > 5:
             alertas.append(f'{equipo}: sin commits desde {fecha}')
-        subidas = []
+        subidas, final = [], {}
         for iss, c in sorted(c_iss.items()):
             actual = fila[c].strip() if c < len(fila) else ''
             nuevo = est[iss]
+            final[iss] = actual if actual in ORDEN else 'Pendiente'
             if ORDEN[nuevo] > ORDEN.get(actual, 0):  # regla de no retroceso
                 cambios.append({'range': f'{PESTANA}!{col_letra(c)}{r + 1}', 'values': [[nuevo]]})
-                subidas.append(f'{iss}: {actual or "vacío"}→{nuevo}')
+                subidas.append(f'{c_nombre[iss]}: {actual or "vacío"} → {nuevo}')
+                final[iss] = nuevo
         if subidas:
-            lineas.append(f'{equipo}: ' + ', '.join(subidas))
+            lineas.append(f'{equipo}: ' + '; '.join(subidas))
+        equipos.append({
+            'equipo': equipo, 'grupo': fila[c_grupo] if c_grupo < len(fila) else '',
+            'final': final, 'fecha': fecha or '—',
+            'dias': (hoy - datetime.date.fromisoformat(fecha)).days if fecha else None,
+        })
 
     if cambios and not DRY:
         hoja.spreadsheet.values_batch_update({'valueInputOption': 'USER_ENTERED', 'data': cambios})
 
-    vence = next((t for f, t in CALENDARIO if hoy <= f), 'Ciclo terminado')
-    vencidos = [t for f, t in CALENDARIO if f < hoy]
-    cuerpo = '\n'.join([
-        f'Seguimiento TREND+TECH — {hoy.isoformat()}' + ('  [MODO PRUEBA, sin escribir]' if DRY else ''),
-        '',
-        'CAMBIOS EN LA HOJA:', *(lineas or ['Sin cambios.']),
-        '',
-        'ALERTAS:', *(alertas or ['Ninguna.']),
-        '',
-        f'ESTA SEMANA: {vence}',
-        *(['YA VENCIDO: ' + ' | '.join(vencidos)] if vencidos else []),
-        '',
-        f'Hoja: https://docs.google.com/spreadsheets/d/{os.environ["SHEET_ID"]}/edit',
-    ])
-    print(cuerpo)
+    cuerpo = armar_resumen(hoy, equipos, lineas, alertas, os.environ['SHEET_ID'], c_nombre)
+    print(re.sub(r'<[^>]+>', ' ', cuerpo))
 
     if os.environ.get('GMAIL_APP_PASSWORD'):
-        msg = MIMEText(cuerpo, 'plain', 'utf-8')
+        msg = MIMEText(cuerpo, 'html', 'utf-8')
         msg['Subject'] = f'Seguimiento TREND+TECH {hoy.isoformat()}'
         msg['From'] = os.environ['GMAIL_USER']
         msg['To'] = os.environ['MAIL_TO']
