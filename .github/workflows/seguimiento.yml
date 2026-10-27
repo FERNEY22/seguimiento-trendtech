@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: '00 11 * * *'   # 10:00 UTC = 5:00 a. m. Bogotá
     - cron: '00 12 * * *'   # 12:00 UTC = 7:00 a. m. Bogotá
-    - cron: '00 23 * * *'   # 23:00 UTC = 17:00 a. m. Bogotá
+    - cron: '00 22 * * *'   # 22:00 UTC = 17:00 a. m. Bogotá
   workflow_dispatch:        # botón "Run workflow" para probar a mano
 
 jobs:
