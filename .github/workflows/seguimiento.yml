@@ -1,8 +1,5 @@
 name: Seguimiento TREND+TECH
 
-on:
-  schedule:
-
   workflow_dispatch:        # botón "Run workflow" para probar a mano
 
 jobs:
